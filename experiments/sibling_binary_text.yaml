@@ -1,5 +1,5 @@
 configuration:
-  batch_size: 8
+  batch_size: 32
   optimizer: torch.optim.AdamW
   lr: 0.001
 
@@ -20,6 +20,11 @@ configuration:
   mask: text
   image_size: 352
   normalize: True
+  num_workers: 12
+  pin_memory: True
+  persistent_workers: True
+  prefetch_factor: 4
+  cache_text_embeddings: True
 
   mix: False
   loss: torch.nn.functional.binary_cross_entropy_with_logits
@@ -27,9 +32,14 @@ configuration:
   init_weights: weights/rd64-uni.pth
 
 test_configuration_common:
-  batch_size: 8
+  batch_size: 64
   image_size: 352
   threshold: 0.5
+  test_num_workers: 8
+  test_pin_memory: True
+  test_persistent_workers: True
+  test_prefetch_factor: 4
+  cache_text_embeddings: True
 
 test_configuration:
   name: bin_test

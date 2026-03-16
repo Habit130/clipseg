@@ -39,7 +39,7 @@ python tools/download_official_weights.py
 
 If the server cannot access the internet, place the official `rd64-uni.pth` file at `weights/rd64-uni.pth` manually before training.
 
-OpenAI CLIP base weights are fetched by `clip.load('ViT-B/16')` on first use. If the server is offline, provide the CLIP cache manually.
+This download is only the official CLIPSeg decoder checkpoint. The OpenAI CLIP `ViT-B/16` backbone is not bundled in that file and is still fetched by `clip.load('ViT-B/16')` on first use. If the server is offline, provide the CLIP cache manually.
 
 ## Training
 
@@ -55,6 +55,11 @@ This uses:
 - `models.clipseg.CLIPDensePredT`
 - no validation split or validation checkpoint selection
 - official `weights/rd64-uni.pth` as initialization weights
+- larger default throughput settings for a single RTX 4090:
+  - train `batch_size=32`
+  - test `batch_size=64`
+  - train `num_workers=12`
+  - fixed text embedding cache enabled
 
 Training outputs are written to `logs/custom-rd64-uni-bin/`.
 

@@ -21,6 +21,40 @@ from general_utils import load_model, log, score_config_from_cli_args, Attribute
 
 DATASET_CACHE = dict()
 
+
+def dataloader_kwargs_from_config(config, prefix=''):
+    kwargs = {}
+
+    num_workers = config[f'{prefix}num_workers'] if f'{prefix}num_workers' in config else None
+    pin_memory = config[f'{prefix}pin_memory'] if f'{prefix}pin_memory' in config else None
+    persistent_workers = config[f'{prefix}persistent_workers'] if f'{prefix}persistent_workers' in config else None
+    prefetch_factor = config[f'{prefix}prefetch_factor'] if f'{prefix}prefetch_factor' in config else None
+
+    if num_workers is not None:
+        kwargs['num_workers'] = num_workers
+    if pin_memory is not None:
+        kwargs['pin_memory'] = pin_memory
+    if persistent_workers is not None and num_workers and num_workers > 0:
+        kwargs['persistent_workers'] = persistent_workers
+    if prefetch_factor is not None and num_workers and num_workers > 0:
+        kwargs['prefetch_factor'] = prefetch_factor
+
+    return kwargs
+
+
+def get_cached_text_conditionals(model, prompts, cache):
+    missing = [prompt for prompt in dict.fromkeys(prompts) if prompt not in cache]
+    if missing:
+        with torch.no_grad():
+            computed = model.compute_conditional(missing).detach().cpu()
+        for prompt, embedding in zip(missing, computed):
+            cache[prompt] = embedding
+
+    return torch.stack([cache[prompt] for prompt in prompts], dim=0).to(
+        next(model.parameters()).device,
+        non_blocking=True,
+    )
+
 def load_model(checkpoint_id, weights_file=None, strict=True, model_args='from_config', with_config=False, ignore_weights=False):
 
     config = json.load(open(join('logs', checkpoint_id, 'config.json')))
@@ -324,11 +358,12 @@ def score(config, train_checkpoint_id, train_config):
 
         split = config.split if 'split' in config else 'test'
         dataset = SiblingBinaryTextDataset(split=split, image_size=train_config.image_size, mask=train_config.mask)
-        loader = DataLoader(dataset, batch_size=config.batch_size, num_workers=2, shuffle=False, drop_last=False)
+        loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, drop_last=False, **dataloader_kwargs_from_config(config, prefix='test_'))
 
         metric_cls = get_attribute(config.metric)
         threshold = config.threshold if 'threshold' in config else 0.5
         metric = metric_cls(threshold=threshold, sigmoid=True, resize_pred=True)
+        text_cond_cache = {} if ('cache_text_embeddings' in config and config.cache_text_embeddings) else None
 
         with torch.no_grad():
             i = 0
@@ -336,7 +371,16 @@ def score(config, train_checkpoint_id, train_config):
                 data_x = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_x]
                 data_y = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_y]
 
-                pred, _, _, _ = model(data_x[0], data_x[1], return_features=True)
+                cond = data_x[1]
+                if (
+                    text_cond_cache is not None and
+                    isinstance(cond, (list, tuple)) and
+                    len(cond) > 0 and
+                    isinstance(cond[0], str)
+                ):
+                    cond = get_cached_text_conditionals(model, cond, text_cond_cache)
+
+                pred, _, _, _ = model(data_x[0], cond, return_features=True)
                 metric.add([pred], data_y)
 
                 i += 1

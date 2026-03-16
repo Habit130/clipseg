@@ -28,6 +28,40 @@ def cosine_warmup_lr(i, warmup=10, max_iter=90):
         return 0.5 + 0.5*math.cos(math.pi*(((i-warmup)/(max_iter- warmup))))
 
 
+def dataloader_kwargs_from_config(config, prefix=''):
+    kwargs = {}
+
+    num_workers = config[f'{prefix}num_workers'] if f'{prefix}num_workers' in config else None
+    pin_memory = config[f'{prefix}pin_memory'] if f'{prefix}pin_memory' in config else None
+    persistent_workers = config[f'{prefix}persistent_workers'] if f'{prefix}persistent_workers' in config else None
+    prefetch_factor = config[f'{prefix}prefetch_factor'] if f'{prefix}prefetch_factor' in config else None
+
+    if num_workers is not None:
+        kwargs['num_workers'] = num_workers
+    if pin_memory is not None:
+        kwargs['pin_memory'] = pin_memory
+    if persistent_workers is not None and num_workers and num_workers > 0:
+        kwargs['persistent_workers'] = persistent_workers
+    if prefetch_factor is not None and num_workers and num_workers > 0:
+        kwargs['prefetch_factor'] = prefetch_factor
+
+    return kwargs
+
+
+def get_cached_text_conditionals(model, prompts, cache):
+    missing = [prompt for prompt in dict.fromkeys(prompts) if prompt not in cache]
+    if missing:
+        with torch.no_grad():
+            computed = model.compute_conditional(missing).detach().cpu()
+        for prompt, embedding in zip(missing, computed):
+            cache[prompt] = embedding
+
+    return torch.stack([cache[prompt] for prompt in prompts], dim=0).to(
+        next(model.parameters()).device,
+        non_blocking=True,
+    )
+
+
 def validate(model, dataset, config):
     data_loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=False)
 
@@ -129,7 +163,8 @@ def main():
 
 
     save_only_trainable = True
-    data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=4)
+    data_loader = DataLoader(dataset, batch_size=batch_size, **dataloader_kwargs_from_config(config))
+    text_cond_cache = {} if config.cache_text_embeddings else None
 
     # disable config when hyperparam. opt. to avoid writing logs.
     tracker_config = config if not config.hyperparameter_optimization else None
@@ -184,18 +219,25 @@ def main():
                         # compute conditional vector using CLIP masking
                         with autocast_fn():
                             assert config.mask == 'separate'
-                            cond, _, _ = model.visual_forward_masked(data_x[1].cuda(), data_x[2].cuda())
+                            cond, _, _ = model.visual_forward_masked(data_x[1].cuda(non_blocking=True), data_x[2].cuda(non_blocking=True))
                     else:
                         cond = data_x[1]
                         if isinstance(cond, torch.Tensor):
-                            cond = cond.cuda()
+                            cond = cond.cuda(non_blocking=True)
+                        elif (
+                            text_cond_cache is not None and
+                            isinstance(cond, (list, tuple)) and
+                            len(cond) > 0 and
+                            isinstance(cond[0], str)
+                        ):
+                            cond = get_cached_text_conditionals(model, cond, text_cond_cache)
 
                 with autocast_fn():
                     visual_q = None
 
-                    pred, visual_q, _, _  = model(data_x[0].cuda(), cond, return_features=True)
+                    pred, visual_q, _, _  = model(data_x[0].cuda(non_blocking=True), cond, return_features=True)
 
-                    loss = loss_fn(pred, data_y[0].cuda())
+                    loss = loss_fn(pred, data_y[0].cuda(non_blocking=True))
 
                     if torch.isnan(loss) or torch.isinf(loss):
                         # skip if loss is nan
