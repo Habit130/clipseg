@@ -319,6 +319,33 @@ def score(config, train_checkpoint_id, train_config):
         return {key_prefix: metric.scores()}
         #return {key_prefix: {k: v for k, v in zip(metric.names(), metric.value())}}
 
+    if config.test_dataset == 'sibling_binary_text':
+        from datasets.sibling_binary_text import SiblingBinaryTextDataset
+
+        split = config.split if 'split' in config else 'test'
+        dataset = SiblingBinaryTextDataset(split=split, image_size=train_config.image_size, mask=train_config.mask)
+        loader = DataLoader(dataset, batch_size=config.batch_size, num_workers=2, shuffle=False, drop_last=False)
+
+        metric_cls = get_attribute(config.metric)
+        threshold = config.threshold if 'threshold' in config else 0.5
+        metric = metric_cls(threshold=threshold, sigmoid=True, resize_pred=True)
+
+        with torch.no_grad():
+            i = 0
+            for data_x, data_y in loader:
+                data_x = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_x]
+                data_y = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_y]
+
+                pred, _, _, _ = model(data_x[0], data_x[1], return_features=True)
+                metric.add([pred], data_y)
+
+                i += 1
+                if config.max_iterations and i >= config.max_iterations:
+                    break
+
+        key_prefix = config['name'] if 'name' in config else 'binary'
+        return {key_prefix: metric.scores()}
+
     if config.test_dataset == 'pascal_zs':
         from third_party.JoEm.model.metric import Evaluator
         from third_party.JoEm.data_loader import get_seen_idx, get_unseen_idx, VOC

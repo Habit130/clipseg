@@ -81,6 +81,11 @@ def main():
     _, model_args, _ = filter_args(config, inspect.signature(model_cls).parameters)
     model = model_cls(**model_args).cuda()
 
+    if config.init_weights is not None:
+        init_weights = torch.load(config.init_weights, map_location='cpu')
+        model.load_state_dict(init_weights, strict=False)
+        log.info(f'Loaded init weights from {config.init_weights}')
+
     dataset_cls = get_attribute(config.dataset)
     _, dataset_args, _ = filter_args(config, inspect.signature(dataset_cls).parameters)
 

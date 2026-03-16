@@ -1,0 +1,43 @@
+configuration:
+  batch_size: 8
+  optimizer: torch.optim.AdamW
+  lr: 0.001
+
+  model: models.clipseg.CLIPDensePredT
+  version: 'ViT-B/16'
+  reduce_dim: 64
+  extract_layers: [3, 7, 9]
+
+  lr_scheduler: cosine
+  T_max: 20000
+  eta_min: 0.0001
+
+  max_iterations: 20000
+  val_interval: null
+
+  dataset: datasets.sibling_binary_text.SiblingBinaryTextDataset
+  split: train
+  mask: text
+  image_size: 352
+  normalize: True
+
+  mix: False
+  loss: torch.nn.functional.binary_cross_entropy_with_logits
+  amp: True
+  init_weights: weights/rd64-uni.pth
+
+test_configuration_common:
+  batch_size: 8
+  image_size: 352
+  threshold: 0.5
+
+test_configuration:
+  name: bin_test
+  metric: metrics.BinarySegMetrics
+  test_dataset: sibling_binary_text
+  split: test
+
+columns: [name, iou, dice, recall, miou, macc]
+
+individual_configurations:
+  - {name: custom-rd64-uni-bin}

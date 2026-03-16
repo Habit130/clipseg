@@ -269,3 +269,65 @@ class FixedIntervalMetrics(BaseMetric):
 
         # return ap, best_fgiou, best_mean_iou, iou_0p5, iou_0p1, mean_iou_0p5, mean_iou_0p1, best_biniou, biniou0p5, best_fgiou_thresh, {'summed': summed, 'summed_by_cls': summed_by_cls}
 
+
+class BinarySegMetrics(BaseMetric):
+
+    def __init__(self, threshold=0.5, sigmoid=True, resize_pred=False):
+        super().__init__(('iou', 'dice', 'recall', 'miou', 'macc'))
+        self.threshold = threshold
+        self.sigmoid = sigmoid
+        self.resize_pred = resize_pred
+        self.tp = 0.0
+        self.fp = 0.0
+        self.fn = 0.0
+        self.tn = 0.0
+
+    def add(self, predictions, ground_truth):
+        pred_batch = predictions[0].detach().cpu()
+        gt_batch = ground_truth[0].detach().cpu()
+        valid_mask_batch = ground_truth[1] if len(ground_truth) > 1 and getattr(ground_truth[1], 'numel', lambda: 0)() > 0 else None
+
+        if self.sigmoid:
+            pred_batch = torch.sigmoid(pred_batch)
+
+        for idx, (prediction, target) in enumerate(zip(pred_batch, gt_batch)):
+            if self.resize_pred:
+                prediction = nnf.interpolate(
+                    prediction.unsqueeze(0).float(),
+                    size=target.shape[-2:],
+                    mode='bilinear',
+                    align_corners=True,
+                )[0]
+
+            prediction = (prediction > self.threshold).to(torch.bool)
+            target = (target > 0).to(torch.bool)
+
+            if valid_mask_batch is not None:
+                valid_mask = valid_mask_batch[idx].flatten().to(torch.bool)
+                prediction = prediction.flatten()[valid_mask]
+                target = target.flatten()[valid_mask]
+            else:
+                prediction = prediction.flatten()
+                target = target.flatten()
+
+            self.tp += float((prediction & target).sum())
+            self.fp += float((prediction & ~target).sum())
+            self.fn += float((~prediction & target).sum())
+            self.tn += float((~prediction & ~target).sum())
+
+    def value(self):
+        fg_iou = self.tp / (self.tp + self.fp + self.fn + 1e-8)
+        bg_iou = self.tn / (self.tn + self.fp + self.fn + 1e-8)
+        fg_recall = self.tp / (self.tp + self.fn + 1e-8)
+        bg_acc = self.tn / (self.tn + self.fp + 1e-8)
+        fg_acc = self.tp / (self.tp + self.fn + 1e-8)
+        dice = (2 * self.tp) / (2 * self.tp + self.fp + self.fn + 1e-8)
+
+        return {
+            'iou': fg_iou,
+            'dice': dice,
+            'recall': fg_recall,
+            'miou': 0.5 * (fg_iou + bg_iou),
+            'macc': 0.5 * (fg_acc + bg_acc),
+        }
+
