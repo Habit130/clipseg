@@ -152,11 +152,13 @@ def main():
     config, train_checkpoint_id = score_config_from_cli_args()
 
     metrics = score(config, train_checkpoint_id, None)
+    percentage_output = config.metric == 'metrics.BinarySegMetrics'
 
     for dataset in metrics.keys():
         for k in metrics[dataset]:
             if type(metrics[dataset][k]) in {float, int}:
-                print(dataset, f'{k:<16} {metrics[dataset][k]:.3f}')
+                suffix = '%' if percentage_output else ''
+                print(dataset, f'{k:<16} {metrics[dataset][k]:.3f}{suffix}')
 
 
 def score(config, train_checkpoint_id, train_config):
@@ -365,7 +367,7 @@ def score(config, train_checkpoint_id, train_config):
         metric = metric_cls(threshold=threshold, sigmoid=True, resize_pred=True)
         text_cond_cache = {} if ('cache_text_embeddings' in config and config.cache_text_embeddings) else None
 
-        with torch.no_grad():
+        with torch.inference_mode():
             i = 0
             for data_x, data_y in loader:
                 data_x = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_x]

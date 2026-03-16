@@ -79,7 +79,7 @@ The reported metrics are:
 - `miou`
 - `macc`
 
-`miou` and `macc` are both computed as the mean over background and foreground classes.
+`miou` and `macc` are both computed as the mean over background and foreground classes, and all five metrics are printed in percentage form.
 
 ## Notes
 

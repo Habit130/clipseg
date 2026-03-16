@@ -324,10 +324,10 @@ class BinarySegMetrics(BaseMetric):
         dice = (2 * self.tp) / (2 * self.tp + self.fp + self.fn + 1e-8)
 
         return {
-            'iou': fg_iou,
-            'dice': dice,
-            'recall': fg_recall,
-            'miou': 0.5 * (fg_iou + bg_iou),
-            'macc': 0.5 * (fg_acc + bg_acc),
+            'iou': fg_iou * 100.0,
+            'dice': dice * 100.0,
+            'recall': fg_recall * 100.0,
+            'miou': 0.5 * (fg_iou + bg_iou) * 100.0,
+            'macc': 0.5 * (fg_acc + bg_acc) * 100.0,
         }
 

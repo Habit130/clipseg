@@ -1,5 +1,5 @@
 configuration:
-  batch_size: 32
+  batch_size: 128
   optimizer: torch.optim.AdamW
   lr: 0.001
 
@@ -32,7 +32,7 @@ configuration:
   init_weights: weights/rd64-uni.pth
 
 test_configuration_common:
-  batch_size: 64
+  batch_size: 128
   image_size: 352
   threshold: 0.5
   test_num_workers: 8
