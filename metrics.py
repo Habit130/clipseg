@@ -269,3 +269,125 @@ class FixedIntervalMetrics(BaseMetric):
 
         # return ap, best_fgiou, best_mean_iou, iou_0p5, iou_0p1, mean_iou_0p5, mean_iou_0p1, best_biniou, biniou0p5, best_fgiou_thresh, {'summed': summed, 'summed_by_cls': summed_by_cls}
 
+
+class PlantSegMetrics(BaseMetric):
+
+    def __init__(self, sigmoid=True, resize_pred=False, threshold_values=None, custom_threshold=None):
+        super().__init__(('IoU', 'Dice', 'Recall', 'mIoU', 'mACC', 'threshold'))
+        self.sigmoid = sigmoid
+        self.resize_pred = resize_pred
+        self.custom_threshold = custom_threshold
+        self.threshold_values = np.array(
+            threshold_values if threshold_values is not None else np.linspace(0.05, 0.95, 19),
+            dtype=np.float32,
+        )
+        self.stats = dict(tp=[], fp=[], fn=[], tn=[])
+
+    def add(self, predictions, ground_truth):
+
+        pred_batch = predictions[0].detach().cpu()
+        gt_batch = ground_truth[0].detach().cpu()
+
+        if self.sigmoid:
+            pred_batch = torch.sigmoid(pred_batch)
+
+        for prediction, target in zip(pred_batch, gt_batch):
+            if self.resize_pred:
+                prediction = nnf.interpolate(
+                    prediction.unsqueeze(0).float(),
+                    size=target.shape[-2:],
+                    mode='bilinear',
+                    align_corners=True,
+                )[0]
+
+            pred_flat = prediction.flatten()
+            target_flat = (target.flatten() > 0.5).float()
+
+            tp_values, fp_values, fn_values, tn_values = [], [], [], []
+            for threshold in self.threshold_values:
+                pred_mask = pred_flat >= float(threshold)
+
+                tp = int(((pred_mask == 1) & (target_flat == 1)).sum())
+                fp = int(((pred_mask == 1) & (target_flat == 0)).sum())
+                fn = int(((pred_mask == 0) & (target_flat == 1)).sum())
+                tn = int(((pred_mask == 0) & (target_flat == 0)).sum())
+
+                tp_values += [tp]
+                fp_values += [fp]
+                fn_values += [fn]
+                tn_values += [tn]
+
+            self.stats['tp'] += [tp_values]
+            self.stats['fp'] += [fp_values]
+            self.stats['fn'] += [fn_values]
+            self.stats['tn'] += [tn_values]
+
+    @staticmethod
+    def _safe_div(numerator, denominator):
+        return numerator / denominator if denominator > 0 else 0.0
+
+    def _summed_stats(self):
+        return {
+            key: np.array(values, dtype=np.float64).sum(axis=0)
+            for key, values in self.stats.items()
+        }
+
+    def _metric_dict_for_index(self, stats, index):
+        tp = float(stats['tp'][index])
+        fp = float(stats['fp'][index])
+        fn = float(stats['fn'][index])
+        tn = float(stats['tn'][index])
+
+        iou_fg = self._safe_div(tp, tp + fp + fn)
+        dice_fg = self._safe_div(2 * tp, 2 * tp + fp + fn)
+        recall_fg = self._safe_div(tp, tp + fn)
+        iou_bg = self._safe_div(tn, tn + fp + fn)
+        recall_bg = self._safe_div(tn, tn + fp)
+
+        return {
+            'IoU': iou_fg,
+            'Dice': dice_fg,
+            'Recall': recall_fg,
+            'mIoU': 0.5 * (iou_fg + iou_bg),
+            'mACC': 0.5 * (recall_fg + recall_bg),
+            'threshold': float(self.threshold_values[index]),
+        }
+
+    def value(self):
+        if len(self.stats['tp']) == 0:
+            raise ValueError('No samples were added to PlantSegMetrics')
+
+        stats = self._summed_stats()
+        metric_curve = [self._metric_dict_for_index(stats, index) for index in range(len(self.threshold_values))]
+
+        best_index = max(
+            range(len(metric_curve)),
+            key=lambda index: (
+                metric_curve[index]['mIoU'],
+                metric_curve[index]['IoU'],
+                metric_curve[index]['Dice'],
+            ),
+        )
+        best_metrics = metric_curve[best_index]
+
+        value = {
+            'threshold_values': self.threshold_values.tolist(),
+            'iou_scores': [metric['IoU'] for metric in metric_curve],
+            'dice_scores': [metric['Dice'] for metric in metric_curve],
+            'recall_scores': [metric['Recall'] for metric in metric_curve],
+            'miou_scores': [metric['mIoU'] for metric in metric_curve],
+            'macc_scores': [metric['mACC'] for metric in metric_curve],
+            'best_threshold': best_metrics['threshold'],
+            'best_iou': best_metrics['IoU'],
+            'best_dice': best_metrics['Dice'],
+            'best_recall': best_metrics['Recall'],
+            'best_miou': best_metrics['mIoU'],
+            'best_macc': best_metrics['mACC'],
+        }
+
+        if self.custom_threshold is not None:
+            threshold_index = int(np.abs(self.threshold_values - float(self.custom_threshold)).argmin())
+            value.update(self._metric_dict_for_index(stats, threshold_index))
+
+        return value
+

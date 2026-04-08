@@ -1,0 +1,52 @@
+configuration:
+  batch_size: 16
+  optimizer: torch.optim.AdamW
+  lr: 0.001
+
+  model: models.clipseg.CLIPDensePredT
+
+  lr_scheduler: cosine
+  # 9118 training samples / batch_size 16 -> ceil(9118 / 16) = 570 steps per epoch
+  # 50 epochs -> 28500 iterations
+  T_max: 28500
+  eta_min: 0.0001
+  max_iterations: 28500
+  val_interval: null
+
+  dataset: datasets.plantseg.PlantSegDataset
+  split: train
+  image_size: 352
+  mask: text
+  caption_index: 3
+  normalize: True
+
+  mix: False
+  prompt: fixed
+  norm_cond: True
+  mix_text_min: 0.0
+  with_visual: False
+  negative_prob: 0.0
+
+  out: 1
+  version: 'ViT-B/16'
+  extract_layers: [3, 7, 9]
+  reduce_dim: 64
+  depth: 3
+  fix_shift: False
+
+  loss: torch.nn.functional.binary_cross_entropy_with_logits
+  amp: True
+
+test_configuration_common:
+  batch_size: 8
+  test_dataset: plantseg
+  selection_split: val
+  report_split: test
+
+test_configuration:
+  name: plantseg
+
+columns: [name, selected_threshold, val_best_miou, IoU, Dice, Recall, mIoU, mACC]
+
+individual_configurations:
+  - {name: plantseg-rd64-vit16}

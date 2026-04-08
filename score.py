@@ -14,7 +14,7 @@ from os.path import expanduser, join, isfile, realpath
 
 from torch.utils.data import DataLoader
 
-from metrics import FixedIntervalMetrics
+from metrics import FixedIntervalMetrics, PlantSegMetrics
 
 from general_utils import load_model, log, score_config_from_cli_args, AttributeDict, get_attribute, filter_args
 
@@ -112,6 +112,26 @@ def get_cached_pascal_pfe(split, config):
     return dataset
 
 
+def evaluate_plantseg_split(model, dataset, batch_size, custom_threshold=None, max_iterations=None):
+    loader = DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=False, drop_last=False)
+    metric = PlantSegMetrics(sigmoid=True, resize_pred=True, custom_threshold=custom_threshold)
+
+    with torch.no_grad():
+        i = 0
+        for data_x, data_y in loader:
+            data_x = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_x]
+            data_y = [v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_y]
+
+            pred, _, _, _ = model(data_x[0], data_x[1], return_features=True)
+            metric.add([pred], data_y)
+
+            i += 1
+            if max_iterations and i >= max_iterations:
+                break
+
+    return metric.value()
+
+
 
 
 def main():
@@ -165,6 +185,47 @@ def score(config, train_checkpoint_id, train_config):
 
     if 'custom_threshold' in config:
         metric_args['custom_threshold'] = config.custom_threshold     
+
+    if config.test_dataset == 'plantseg':
+        dataset_cls = get_attribute(train_config.dataset)
+        _, dataset_args, _ = filter_args(train_config, inspect.signature(dataset_cls).parameters)
+        dataset_args['image_size'] = train_config.image_size
+
+        selection_split = config.selection_split if 'selection_split' in config else 'val'
+        report_split = config.report_split if 'report_split' in config else 'test'
+
+        selection_dataset = dataset_cls(**{**dataset_args, 'split': selection_split})
+        selection_scores = evaluate_plantseg_split(
+            model,
+            selection_dataset,
+            batch_size=config.batch_size,
+            max_iterations=config.max_iterations if 'max_iterations' in config else None,
+        )
+        selected_threshold = selection_scores['best_threshold']
+
+        report_dataset = dataset_cls(**{**dataset_args, 'split': report_split})
+        report_scores = evaluate_plantseg_split(
+            model,
+            report_dataset,
+            batch_size=config.batch_size,
+            custom_threshold=selected_threshold,
+            max_iterations=config.max_iterations if 'max_iterations' in config else None,
+        )
+
+        key_prefix = config['name'] if 'name' in config else 'plantseg'
+        return {
+            key_prefix: {
+                'IoU': report_scores['IoU'],
+                'Dice': report_scores['Dice'],
+                'Recall': report_scores['Recall'],
+                'mIoU': report_scores['mIoU'],
+                'mACC': report_scores['mACC'],
+                'selected_threshold': selected_threshold,
+                'val_best_miou': selection_scores['best_miou'],
+                'val_best_iou': selection_scores['best_iou'],
+                'val_best_dice': selection_scores['best_dice'],
+            }
+        }
 
     if config.test_dataset == 'pascal':
         
