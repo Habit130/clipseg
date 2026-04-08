@@ -21,6 +21,23 @@ from general_utils import load_model, log, score_config_from_cli_args, Attribute
 
 DATASET_CACHE = dict()
 
+
+THRESHOLD_KEYS = {
+    'threshold',
+    'selected_threshold',
+    'best_threshold',
+    'ct',
+    'fgiou_best_t',
+    'biniou_best_t',
+    'miou_best_t',
+}
+
+
+def format_metric_for_cli(metric_name, value):
+    if metric_name in THRESHOLD_KEYS or metric_name.endswith('_threshold'):
+        return f'{value:.2f}'
+    return f'{value * 100:.2f}'
+
 def load_model(checkpoint_id, weights_file=None, strict=True, model_args='from_config', with_config=False, ignore_weights=False):
 
     config = json.load(open(join('logs', checkpoint_id, 'config.json')))
@@ -142,7 +159,8 @@ def main():
     for dataset in metrics.keys():
         for k in metrics[dataset]:
             if type(metrics[dataset][k]) in {float, int}:
-                print(dataset, f'{k:<16} {metrics[dataset][k]:.3f}')
+                formatted_value = format_metric_for_cli(k, metrics[dataset][k])
+                print(dataset, f'{k:<16} {formatted_value}')
 
 
 def score(config, train_checkpoint_id, train_config):
