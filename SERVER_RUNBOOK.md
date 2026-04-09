@@ -62,6 +62,8 @@ Behavior:
 - loads `logs/plantseg-rd64-vit16/weights.pth`
 - selects one threshold on the validation split by maximizing `mIoU`
 - reports final test metrics with the chosen threshold
+- saves binary prediction masks to `logs/plantseg-rd64-vit16/pred_masks_test/`
+- keeps each saved mask aligned with the reference mask image size and mode
 
 Reported metrics:
 

@@ -133,3 +133,4 @@ dmypy.json
 
 # Training / evaluation outputs
 logs/
+tmp_pred_check/
