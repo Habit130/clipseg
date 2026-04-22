@@ -45,6 +45,13 @@ def score_config_from_cli_args():
     if 'test_configuration' in yaml_config['individual_configurations'][experiment_id]:
         config = {**config, **yaml_config['individual_configurations'][experiment_id]['test_configuration']}
 
+    if '--save_pred_dir' in sys.argv:
+        save_pred_dir_idx = sys.argv.index('--save_pred_dir')
+        try:
+            config['save_pred_dir'] = sys.argv[save_pred_dir_idx + 1]
+        except IndexError:
+            raise ValueError('--save_pred_dir requires a directory path')
+
     train_checkpoint_id = yaml_config['individual_configurations'][experiment_id]['name']
 
     config = AttributeDict(config)

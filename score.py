@@ -7,11 +7,12 @@ import yaml
 import time
 import sys
 from os import makedirs
+from os.path import relpath
 
 from general_utils import log
 
 import numpy as np
-from os.path import basename, expanduser, join, isfile, realpath
+from os.path import basename, dirname, expanduser, join, isfile, realpath
 
 from PIL import Image
 from torch.nn import functional as nnf
@@ -132,19 +133,16 @@ def get_cached_pascal_pfe(split, config):
     return dataset
 
 
-def evaluate_plantseg_split(model, dataset, batch_size, custom_threshold=None, max_iterations=None, save_dir=None):
+def collect_plantseg_logits(model, dataset, batch_size, max_iterations=None):
     num_workers = 0 if sys.platform.startswith('win') else 2
     loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False)
-    metric = PlantSegMetrics(sigmoid=True, resize_pred=True, custom_threshold=custom_threshold)
     try:
         model_device = next(model.parameters()).device
     except StopIteration:
         model_device = torch.device('cpu')
 
-    if save_dir is not None:
-        makedirs(save_dir, exist_ok=True)
-        if custom_threshold is None:
-            raise ValueError('custom_threshold is required when save_dir is provided')
+    logits = []
+    labels = []
 
     with torch.no_grad():
         i = 0
@@ -153,37 +151,59 @@ def evaluate_plantseg_split(model, dataset, batch_size, custom_threshold=None, m
             data_y = [v.to(model_device, non_blocking=True) if isinstance(v, torch.Tensor) else v for v in data_y]
 
             pred, _, _, _ = model(data_x[0], data_x[1], return_features=True)
-            metric.add([pred], data_y)
-
-            if save_dir is not None:
-                pred_probs = torch.sigmoid(pred.detach()).cpu()
-                batch_indices = data_y[2].detach().cpu().tolist()
-
-                for batch_offset, sample_index in enumerate(batch_indices):
-                    sample = dataset.samples[int(sample_index)]
-                    mask_path = join(dataset.base_dir, sample['mask'])
-                    with Image.open(mask_path) as gt_mask:
-                        mask_size = gt_mask.size
-                        mask_mode = gt_mask.mode
-
-                    pred_mask = nnf.interpolate(
-                        pred_probs[batch_offset: batch_offset + 1],
-                        size=(mask_size[1], mask_size[0]),
-                        mode='bilinear',
-                        align_corners=True,
-                    )[0, 0]
-                    pred_mask = (pred_mask >= float(custom_threshold)).to(torch.uint8).numpy() * 255
-
-                    output_image = Image.fromarray(pred_mask.astype(np.uint8), mode='L')
-                    if mask_mode != 'L':
-                        output_image = output_image.convert(mask_mode)
-                    output_image.save(join(save_dir, basename(sample['mask'])))
+            logits += [pred.detach().cpu()]
+            labels += [(data_y[0].detach().cpu(), data_y[1], data_y[2].detach().cpu())]
 
             i += 1
             if max_iterations and i >= max_iterations:
                 break
 
+    return logits, labels
+
+
+def select_plantseg_threshold(model, dataset, batch_size, max_iterations=None):
+    logits, labels = collect_plantseg_logits(model, dataset, batch_size=batch_size, max_iterations=max_iterations)
+    metric = PlantSegMetrics(sigmoid=True, resize_pred=True)
+    for pred, label in zip(logits, labels):
+        metric.add([pred], label)
     return metric.value()
+
+
+def save_plantseg_predictions(model, dataset, batch_size, save_dir, threshold, max_iterations=None):
+    makedirs(save_dir, exist_ok=True)
+    logits, labels = collect_plantseg_logits(model, dataset, batch_size=batch_size, max_iterations=max_iterations)
+
+    num_saved = 0
+    for pred, label in zip(logits, labels):
+        pred_probs = torch.sigmoid(pred)
+        batch_indices = label[2].tolist()
+
+        for batch_offset, sample_index in enumerate(batch_indices):
+            sample = dataset.samples[int(sample_index)]
+            mask_path = join(dataset.base_dir, sample['mask'])
+            with Image.open(mask_path) as gt_mask:
+                mask_size = gt_mask.size
+                mask_mode = gt_mask.mode
+
+            pred_mask = nnf.interpolate(
+                pred_probs[batch_offset: batch_offset + 1],
+                size=(mask_size[1], mask_size[0]),
+                mode='bilinear',
+                align_corners=True,
+            )[0, 0]
+            pred_mask = (pred_mask >= float(threshold)).to(torch.uint8).numpy() * 255
+
+            output_image = Image.fromarray(pred_mask.astype(np.uint8), mode='L')
+            if mask_mode != 'L':
+                output_image = output_image.convert(mask_mode)
+
+            mask_rel_path = relpath(mask_path, dataset.gt_dir)
+            output_path = join(save_dir, mask_rel_path)
+            makedirs(dirname(output_path), exist_ok=True)
+            output_image.save(output_path)
+            num_saved += 1
+
+    return num_saved
 
 
 
@@ -198,6 +218,8 @@ def main():
             if type(metrics[dataset][k]) in {float, int}:
                 formatted_value = format_metric_for_cli(k, metrics[dataset][k])
                 print(dataset, f'{k:<16} {formatted_value}')
+            elif isinstance(metrics[dataset][k], str):
+                print(dataset, f'{k:<16} {metrics[dataset][k]}')
 
 
 def score(config, train_checkpoint_id, train_config):
@@ -248,43 +270,40 @@ def score(config, train_checkpoint_id, train_config):
 
         selection_split = config.selection_split if 'selection_split' in config else 'val'
         report_split = config.report_split if 'report_split' in config else 'test'
+        pred_mask_dir = config.save_pred_dir if 'save_pred_dir' in config else join('logs', train_checkpoint_id, f'pred_masks_{report_split}')
 
-        selection_dataset = dataset_cls(**{**dataset_args, 'split': selection_split})
-        selection_scores = evaluate_plantseg_split(
-            model,
-            selection_dataset,
-            batch_size=config.batch_size,
-            max_iterations=config.max_iterations if 'max_iterations' in config else None,
-        )
-        selected_threshold = selection_scores['best_threshold']
+        if 'custom_threshold' in config:
+            selected_threshold = config.custom_threshold
+        else:
+            selection_dataset = dataset_cls(**{**dataset_args, 'split': selection_split})
+            selection_scores = select_plantseg_threshold(
+                model,
+                selection_dataset,
+                batch_size=config.batch_size,
+                max_iterations=config.max_iterations if 'max_iterations' in config else None,
+            )
+            selected_threshold = selection_scores['best_threshold']
 
         report_dataset = dataset_cls(**{**dataset_args, 'split': report_split})
-        pred_mask_dir = join('logs', train_checkpoint_id, f'pred_masks_{report_split}')
-        report_scores = evaluate_plantseg_split(
+        num_saved = save_plantseg_predictions(
             model,
             report_dataset,
             batch_size=config.batch_size,
-            custom_threshold=selected_threshold,
-            max_iterations=config.max_iterations if 'max_iterations' in config else None,
             save_dir=pred_mask_dir,
+            threshold=selected_threshold,
+            max_iterations=config.max_iterations if 'max_iterations' in config else None,
         )
-        log.info(f'Saved PlantSeg prediction masks to {pred_mask_dir}')
+        log.info(f'Saved {num_saved} PlantSeg prediction masks to {pred_mask_dir}')
 
         key_prefix = config['name'] if 'name' in config else 'plantseg'
-        return {
-            key_prefix: {
-                'IoU': report_scores['IoU'],
-                'Dice': report_scores['Dice'],
-                'Recall': report_scores['Recall'],
-                'mIoU': report_scores['mIoU'],
-                'mACC': report_scores['mACC'],
-                'selected_threshold': selected_threshold,
-                'val_best_miou': selection_scores['best_miou'],
-                'val_best_iou': selection_scores['best_iou'],
-                'val_best_dice': selection_scores['best_dice'],
-                'pred_mask_dir': pred_mask_dir,
-            }
+        result = {
+            'selected_threshold': selected_threshold,
+            'num_saved_masks': num_saved,
+            'pred_mask_dir': pred_mask_dir,
         }
+        if 'custom_threshold' not in config:
+            result['val_best_miou'] = selection_scores['best_miou']
+        return {key_prefix: result}
 
     if config.test_dataset == 'pascal':
         

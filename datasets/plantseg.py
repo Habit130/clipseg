@@ -22,6 +22,7 @@ class PlantSegDataset(object):
         self.normalize = normalize
         self.negative_prob = 0.0
         self.base_dir = realpath(data_root or join(dirname(__file__), '..', '..', 'plantseg'))
+        self.gt_dir = join(self.base_dir, 'ann')
 
         manifest_path = join(self.base_dir, 'main.json')
         if not isfile(manifest_path):
